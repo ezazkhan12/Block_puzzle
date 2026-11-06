@@ -1,0 +1,350 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<title>Block Puzzle</title>
+<style>
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  body {
+    margin: 0; min-height: 100vh; background: #12141f; color: #fff;
+    font-family: Arial, sans-serif; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; padding: 10px; user-select: none;
+  }
+  h1 { margin: 0 0 8px; font-size: 22px; letter-spacing: 2px; }
+  #wrap { display: flex; gap: 12px; align-items: flex-start; }
+  canvas { background: #1e2133; border: 3px solid #3b4066; border-radius: 8px; }
+  #board { width: min(60vw, 300px); height: auto; }
+  #side { display: flex; flex-direction: column; gap: 10px; min-width: 90px; }
+  .box { background: #1e2133; border: 2px solid #3b4066; border-radius: 8px; padding: 8px; text-align: center; }
+  .box small { color: #9aa0c8; display: block; font-size: 11px; }
+  .box b { font-size: 20px; }
+  #next { width: 80px; height: 80px; background: transparent; border: none; }
+  #controls { display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; margin-top: 12px; width: min(92vw, 420px); }
+  button {
+    font-size: 22px; padding: 14px 0; border: none; border-radius: 10px;
+    background: #3b4066; color: #fff; touch-action: manipulation;
+  }
+  button:active { background: #5560a8; }
+  #overlay {
+    position: fixed; inset: 0; background: rgba(0,0,0,.75); display: flex;
+    flex-direction: column; align-items: center; justify-content: center; gap: 12px; text-align: center;
+  }
+  #overlay.hide { display: none; }
+  #overlay button { background: #ff9f1c; padding: 14px 36px; font-size: 20px; }
+  #hint { color: #9aa0c8; font-size: 12px; margin-top: 8px; text-align: center; }
+  #nameIn { padding: 10px; font-size: 16px; border-radius: 8px; border: 2px solid #3b4066; background: #1e2133; color: #fff; text-align: center; width: 200px; }
+  #board-wrap { background: #1e2133; border: 2px solid #3b4066; border-radius: 10px; padding: 10px; width: min(88vw, 300px); }
+  #board-wrap h3 { margin: 0 0 6px; font-size: 14px; color: #ff9f1c; }
+  #board-list { font-size: 14px; max-height: 220px; overflow-y: auto; text-align: left; }
+  #board-list .row { display: flex; justify-content: space-between; padding: 3px 0; border-bottom: 1px solid #2c3050; }
+  #board-list .row.me { color: #ffd60a; font-weight: bold; }
+  #phoneIn { padding: 10px; font-size: 16px; border-radius: 8px; border: 2px solid #3b4066; background: #1e2133; color: #fff; text-align: center; width: 200px; }
+  #loginErr { color: #ff6b6b; font-size: 13px; min-height: 16px; }
+  #logout { background: #3b4066 !important; padding: 8px 20px !important; font-size: 14px !important; }
+  .stack { display: flex; flex-direction: column; align-items: center; gap: 10px; }
+  .hide { display: none !important; }
+</style>
+</head>
+<body>
+<h1>BLOCK PUZZLE</h1>
+<div id="wrap">
+  <canvas id="board" width="300" height="600"></canvas>
+  <div id="side">
+    <div class="box"><small>SCORE</small><b id="score">0</b></div>
+    <div class="box"><small>LINES</small><b id="lines">0</b></div>
+    <div class="box"><small>LEVEL</small><b id="level">1</b></div>
+    <div class="box"><small>NEXT</small><canvas id="next" width="80" height="80"></canvas></div>
+    <button id="pause" style="font-size:14px;padding:10px 0">Pause</button>
+  </div>
+</div>
+<div id="controls">
+  <button id="bL">◀</button>
+  <button id="bR">▶</button>
+  <button id="bRot">⟳</button>
+  <button id="bD">▼</button>
+  <button id="bDrop">⏬</button>
+</div>
+<div id="hint">Keys: ← → move · ↑ rotate · ↓ soft drop · Space hard drop · P pause</div>
+
+<div id="overlay">
+  <h2 id="msg">Block Puzzle</h2>
+  <div id="sub">Fill a full horizontal row to score!</div>
+  <div id="loginBox" class="stack">
+    <input id="phoneIn" type="tel" placeholder="Your phone number">
+    <button id="loginBtn">Login</button>
+    <div id="loginErr"></div>
+  </div>
+  <div id="startBox" class="stack hide">
+    <div id="welcome"></div>
+    <button id="start">Start</button>
+    <button id="logout">Logout</button>
+  </div>
+  <div id="board-wrap"><h3>🏆 TOP 10 SCORES</h3><div id="board-list"></div></div>
+</div>
+
+<script>
+// ====== 1) FIREBASE: paste your Realtime Database link between the quotes ======
+const FIREBASE_URL = "https://block-puzzle-892fc-default-rtdb.asia-southeast1.firebasedatabase.app/"; // example: https://my-game-default-rtdb.firebaseio.com
+
+// ====== 2) PLAYERS: add each allowed player as  "phone number": "User name"  ======
+// Only the numbers listed here can log in. Use digits only (no spaces or +).
+const PLAYERS = {
+  "9101188370": "ezaz",
+  "9123456780": "Priya",
+  "9988776655": "Aman"
+};
+// ==================================================================================
+
+const fbReady = () => FIREBASE_URL.startsWith("http");
+const base = () => FIREBASE_URL.replace(/\/+$/, "") + "/blockpuzzle_scores";
+let phone = null, playerName = "";
+
+async function saveScore(pts) {
+  if (!fbReady() || !phone || pts <= 0) return;
+  try {
+    // only save if it beats this player's best score
+    const old = await (await fetch(base() + "/" + phone + ".json")).json();
+    if (old && old.score >= pts) return;
+    await fetch(base() + "/" + phone + ".json", {
+      method: "PUT",
+      body: JSON.stringify({ name: playerName, score: pts, time: Date.now() })
+    });
+  } catch (e) { console.error("Save failed", e); }
+}
+async function loadBoard() {
+  const box = document.getElementById("board-list");
+  if (!fbReady()) { box.textContent = "Paste your Firebase URL in the code to turn on the scoreboard."; return; }
+  box.textContent = "Loading...";
+  try {
+    const data = (await (await fetch(base() + ".json")).json()) || {};
+    // show every player from the PLAYERS list, with their best score (0 if none yet)
+    const list = Object.keys(PLAYERS).map(ph => ({
+      ph: ph, name: PLAYERS[ph], score: data[ph] ? data[ph].score : 0
+    })).sort((a, b) => b.score - a.score);
+    box.innerHTML = "";
+    list.forEach((r, i) => {
+      const row = document.createElement("div");
+      row.className = "row" + (r.ph === phone ? " me" : "");
+      const a = document.createElement("span"); a.textContent = (i + 1) + ". " + r.name;
+      const b = document.createElement("span"); b.textContent = r.score;
+      row.append(a, b); box.appendChild(row);
+    });
+  } catch (e) { box.textContent = "Could not load scores. Check your Firebase URL and rules."; }
+}
+  // ----- Login -----
+function showLoggedIn() {
+  document.getElementById("loginBox").classList.add("hide");
+  document.getElementById("startBox").classList.remove("hide");
+  document.getElementById("welcome").textContent = "Welcome, " + playerName + "!";
+}
+function login() {
+  const num = document.getElementById("phoneIn").value.replace(/[^0-9]/g, "");
+  if (!PLAYERS[num]) { document.getElementById("loginErr").textContent = "This number is not allowed to play."; return; }
+  phone = num; playerName = PLAYERS[num];
+  document.getElementById("loginErr").textContent = "";
+  try { localStorage.setItem("bp_phone", num); } catch (e) {}
+  showLoggedIn(); loadBoard();
+}
+function logout() {
+  phone = null; playerName = "";
+  try { localStorage.removeItem("bp_phone"); } catch (e) {}
+  document.getElementById("phoneIn").value = "";
+  document.getElementById("startBox").classList.add("hide");
+  document.getElementById("loginBox").classList.remove("hide");
+  loadBoard();
+}
+
+const COLS = 10, ROWS = 20, SIZE = 30;
+const board = document.getElementById('board'), ctx = board.getContext('2d');
+const nextC = document.getElementById('next'), nctx = nextC.getContext('2d');
+
+// Each block type: its shape (1 = filled square) and color
+const TYPES = {
+  I: { c: '#00d9ff', s: [[1,1,1,1]] },
+  O: { c: '#ffd60a', s: [[1,1],[1,1]] },
+  T: { c: '#b45cff', s: [[0,1,0],[1,1,1]] },
+  S: { c: '#3ddc84', s: [[0,1,1],[1,1,0]] },
+  Z: { c: '#ff4d4d', s: [[1,1,0],[0,1,1]] },
+  J: { c: '#4d7cff', s: [[1,0,0],[1,1,1]] },
+  L: { c: '#ff9f1c', s: [[0,0,1],[1,1,1]] }
+};
+const NAMES = Object.keys(TYPES);
+
+let grid, cur, nextPiece, score, lines, level, dropTime, lastTime, running, paused;
+
+function newPiece() {
+  const n = NAMES[Math.floor(Math.random() * NAMES.length)];
+  const t = TYPES[n];
+  return { shape: t.s.map(r => r.slice()), color: t.c, x: 0, y: 0 };
+}
+function spawn() {
+  cur = nextPiece || newPiece();
+  cur.x = Math.floor((COLS - cur.shape[0].length) / 2);
+  cur.y = 0;
+  nextPiece = newPiece();
+  drawNext();
+  if (collides(cur.shape, cur.x, cur.y)) gameOver();
+}
+function collides(shape, px, py) {
+  for (let y = 0; y < shape.length; y++)
+    for (let x = 0; x < shape[y].length; x++) {
+      if (!shape[y][x]) continue;
+      const gx = px + x, gy = py + y;
+      if (gx < 0 || gx >= COLS || gy >= ROWS) return true;
+      if (gy >= 0 && grid[gy][gx]) return true;
+    }
+  return false;
+}
+function rotate(shape) {
+  // turn the shape 90° clockwise
+  return shape[0].map((_, i) => shape.map(r => r[i]).reverse());
+}
+function lock() {
+  cur.shape.forEach((row, y) => row.forEach((v, x) => {
+    if (v && cur.y + y >= 0) grid[cur.y + y][cur.x + x] = cur.color;
+  }));
+  clearLines();
+  spawn();
+}
+function clearLines() {
+  let cleared = 0;
+  for (let y = ROWS - 1; y >= 0; y--) {
+    if (grid[y].every(c => c)) {        // whole row filled horizontally!
+      grid.splice(y, 1);
+      grid.unshift(Array(COLS).fill(0));
+      cleared++; y++;
+    }
+  }
+  if (cleared) {
+    score += [0, 100, 300, 500, 800][cleared] * level;
+    lines += cleared;
+    level = Math.floor(lines / 10) + 1;
+    dropTime = Math.max(100, 800 - (level - 1) * 70);
+    updateUI();
+  }
+}
+function move(dx) { if (!collides(cur.shape, cur.x + dx, cur.y)) cur.x += dx; }
+function turn() {
+  const r = rotate(cur.shape);
+  for (const k of [0, -1, 1, -2, 2])   // small "wall kick" so it can rotate near walls
+    if (!collides(r, cur.x + k, cur.y)) { cur.shape = r; cur.x += k; return; }
+}
+function softDrop() {
+  if (!collides(cur.shape, cur.x, cur.y + 1)) { cur.y++; score += 1; updateUI(); }
+  else lock();
+}
+function hardDrop() {
+  let d = 0;
+  while (!collides(cur.shape, cur.x, cur.y + 1)) { cur.y++; d++; }
+  score += d * 2; updateUI(); lock();
+}
+
+function cell(c, x, y, color, s = SIZE) {
+  c.fillStyle = color; c.fillRect(x * s, y * s, s, s);
+  c.fillStyle = 'rgba(255,255,255,.25)'; c.fillRect(x * s, y * s, s, 4);
+  c.strokeStyle = 'rgba(0,0,0,.35)'; c.strokeRect(x * s + .5, y * s + .5, s - 1, s - 1);
+}
+function draw() {
+  ctx.clearRect(0, 0, board.width, board.height);
+  ctx.strokeStyle = 'rgba(255,255,255,.05)';
+  for (let x = 1; x < COLS; x++) { ctx.beginPath(); ctx.moveTo(x * SIZE, 0); ctx.lineTo(x * SIZE, ROWS * SIZE); ctx.stroke(); }
+  for (let y = 1; y < ROWS; y++) { ctx.beginPath(); ctx.moveTo(0, y * SIZE); ctx.lineTo(COLS * SIZE, y * SIZE); ctx.stroke(); }
+  grid.forEach((row, y) => row.forEach((c, x) => { if (c) cell(ctx, x, y, c); }));
+  if (cur) {
+    // ghost piece (shows where it will land)
+    let gy = cur.y;
+    while (!collides(cur.shape, cur.x, gy + 1)) gy++;
+    ctx.globalAlpha = .2;
+    cur.shape.forEach((row, y) => row.forEach((v, x) => { if (v) cell(ctx, cur.x + x, gy + y, cur.color); }));
+    ctx.globalAlpha = 1;
+    cur.shape.forEach((row, y) => row.forEach((v, x) => { if (v) cell(ctx, cur.x + x, cur.y + y, cur.color); }));
+  }
+}
+function drawNext() {
+  nctx.clearRect(0, 0, 80, 80);
+  const s = nextPiece.shape, cs = 20;
+  const ox = (80 - s[0].length * cs) / 2 / cs, oy = (80 - s.length * cs) / 2 / cs;
+  s.forEach((row, y) => row.forEach((v, x) => { if (v) cell(nctx, ox + x, oy + y, nextPiece.color, cs); }));
+}
+function updateUI() {
+  document.getElementById('score').textContent = score;
+  document.getElementById('lines').textContent = lines;
+  document.getElementById('level').textContent = level;
+}
+
+function loop(t) {
+  if (!running) return;
+  if (!paused) {
+    if (t - lastTime > dropTime) {
+      lastTime = t;
+      if (!collides(cur.shape, cur.x, cur.y + 1)) cur.y++; else lock();
+    }
+    draw();
+  }
+  requestAnimationFrame(loop);
+}
+function startGame() {
+  grid = Array.from({ length: ROWS }, () => Array(COLS).fill(0));
+  score = 0; lines = 0; level = 1; dropTime = 800; paused = false; nextPiece = null;
+  updateUI(); spawn();
+  document.getElementById('overlay').classList.add('hide');
+  running = true; lastTime = performance.now();
+  requestAnimationFrame(loop);
+}
+async function gameOver() {
+  running = false;
+  document.getElementById('msg').textContent = 'Game Over';
+  document.getElementById('sub').textContent = 'Score: ' + score;
+  document.getElementById('start').textContent = 'Play Again';
+  document.getElementById('overlay').classList.remove('hide');
+  document.getElementById('board-list').textContent = 'Saving score...';
+  await saveScore(score);
+  loadBoard();
+}
+function togglePause() {
+  if (!running) return;
+  paused = !paused;
+  document.getElementById('pause').textContent = paused ? 'Resume' : 'Pause';
+      }
+  // Keyboard
+document.addEventListener('keydown', e => {
+  if (e.key === 'p' || e.key === 'P') return togglePause();
+  if (!running || paused) return;
+  if (e.key === 'ArrowLeft') move(-1);
+  else if (e.key === 'ArrowRight') move(1);
+  else if (e.key === 'ArrowUp') turn();
+  else if (e.key === 'ArrowDown') softDrop();
+  else if (e.key === ' ') hardDrop();
+  else return;
+  e.preventDefault(); draw();
+});
+// Touch / click buttons (hold left, right, down to repeat)
+function bind(id, fn, repeat) {
+  const b = document.getElementById(id); let timer;
+  const act = () => { if (running && !paused) { fn(); draw(); } };
+  const stop = () => clearInterval(timer);
+  b.addEventListener('pointerdown', e => { e.preventDefault(); act(); if (repeat) timer = setInterval(act, 110); });
+  ['pointerup', 'pointerleave', 'pointercancel'].forEach(ev => b.addEventListener(ev, stop));
+}
+bind('bL', () => move(-1), true);
+bind('bR', () => move(1), true);
+bind('bD', softDrop, true);
+bind('bRot', turn, false);
+bind('bDrop', hardDrop, false);
+document.getElementById('pause').onclick = togglePause;
+document.getElementById('start').onclick = startGame;
+
+grid = Array.from({ length: ROWS }, () => Array(COLS).fill(0));
+draw();
+document.getElementById('loginBtn').onclick = login;
+document.getElementById('logout').onclick = logout;
+document.getElementById('phoneIn').addEventListener('keydown', e => { if (e.key === 'Enter') login(); });
+try {   // stay logged in next time
+  const saved = localStorage.getItem('bp_phone');
+  if (saved && PLAYERS[saved]) { phone = saved; playerName = PLAYERS[saved]; showLoggedIn(); }
+} catch (e) {}
+loadBoard();
+</script>
+</body>
+</html>
